@@ -27,16 +27,17 @@ jobs:
           cml runner \
               --single \
               --cloud=gcp \
-              --cloud-region=us-west1-c \
-              --cloud-type=n1-highcpu-16 \
-              --cloud-gpu=tesla \
-              --labels=cml-runner
+              --cloud-region=us-west1-a \
+              --cloud-type=n1-highcpu-16+t4 \
+              --labels=cml-gpu
 
   run-command:
     needs: deploy-runner
-    runs-on: [self-hosted, cml-runner]
-    container: python:3.11
-    timeout-minutes: 14400 # 1 week
+    runs-on: [self-hosted, cml-gpu]
+    timeout-minutes: 50400 # 35 days
+    container:
+      image: docker://iterativeai/cml:0-dvc2-base1-gpu
+      options: --gpus all
     steps:
       - uses: actions/checkout@v4
 
