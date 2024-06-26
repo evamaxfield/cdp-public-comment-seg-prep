@@ -1,8 +1,10 @@
 jupyterlab>=4,<5
 pandas>=1,<2
 numpy>=1,<3
+pyannote.audio>=3,<4
+python-dotenv==1.0.1
 seaborn>=0.13,<1
 opinionated>=0.0.3,<0.0.4
 tqdm>=4,<5
 opinionated==0.0.3.0
-cdp-data @ git+https://github.com/councildataproject/cdp-data@v0.0.11
+cdp-data @ git+https://github.com/councildataproject/cdp-data@0b5f518bdba45aaba6a0a3441b77714c83525e99

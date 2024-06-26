@@ -7,6 +7,11 @@ from dataclasses import dataclass
 
 ###############################################################################
 
+DATA_DIR = Path(__file__).parent.parent / "data"
+FULL_METADATA_PATH = DATA_DIR / "full-dataset-metadata.csv"
+
+###############################################################################
+
 @dataclass
 class CouncilDatasetRetrievalArgs:
     council: CDPInstances
@@ -86,6 +91,7 @@ def generate_dataset():
             council_and_sample.council,
             store_transcript=True,
             store_transcript_as_csv=True,
+            store_audio=True,
             start_datetime="2020-01-01",
             end_datetime="2024-01-01",
             sample=council_and_sample.sample,
@@ -151,7 +157,10 @@ def generate_dataset():
             "body_name",
             "normalized_body_name",
             "cdp_url",
+            "minutes_pdf_url",
             "video_uri",
+            "transcript_as_csv_path",
+            "audio_path",
         ]].copy()
 
         # Rename a few of the columns
@@ -167,7 +176,7 @@ def generate_dataset():
     full_dataset = pd.concat(full_dataset_list)
 
     # Save the full dataset
-    full_dataset.to_csv("full-dataset-metadata.csv", index=False)
+    full_dataset.to_csv(FULL_METADATA_PATH, index=False)
 
 ###############################################################################
 
