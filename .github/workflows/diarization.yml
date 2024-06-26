@@ -28,7 +28,8 @@ jobs:
               --single \
               --cloud=gcp \
               --cloud-region=us-west1-a \
-              --cloud-type=n1-highcpu-16+t4 \
+              --cloud-type=n1-highcpu-16 \
+              --cloud-gpu=tesla \
               --labels=cml-gpu
 
   run-command:
