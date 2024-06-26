@@ -27,7 +27,7 @@ jobs:
           cml runner launch \
               --single \
               --cloud=gcp \
-              --cloud-region=us-west4-a \
+              --cloud-region=northamerica-northeast1-c \
               --cloud-type=n1-standard-8 \
               --cloud-gpu=nvidia-tesla-t4 \
               --labels=cml-gpu
