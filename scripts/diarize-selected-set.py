@@ -1,17 +1,17 @@
-import os
 from pathlib import Path
 import shutil
 
 import pandas as pd
 from dotenv import load_dotenv
-from pyannote.audio import Pipeline
 from tqdm import tqdm
-import torch
 
 ###############################################################################
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 FULL_METADATA_PATH = (DATA_DIR / "full-dataset-metadata.csv").absolute().resolve()
+NEW_METADATA_PATH = (
+    (DATA_DIR / "annotation-ready-dataset-metadata.csv").absolute().resolve()
+)
 DIARIZED_TRANSCRIPTS_DIR = DATA_DIR / "diarized-transcripts"
 
 ###############################################################################
@@ -87,7 +87,31 @@ def _prep_dataset(
     df["session_datetime"] = pd.to_datetime(df["session_datetime"])
     df["year"] = df["session_datetime"].dt.year
 
+    # Sort by council and datetime
+    df = df.sort_values(["council", "session_datetime"])
+
+    # Subset to full council
+    df = df.loc[df["normalized_body_name"] == "full council"]
+
+    # Get 2021 data
+    df_2021 = df.loc[df["year"] == 2021].copy()
+    print(f"Number of full council sessions (2021): {len(df_2021)}")
+
+    # Get 2022 Jan, Feb, March data
+    df_2022 = df.loc[
+        (df["year"] == 2022) & (df["session_datetime"].dt.month.isin([1, 2, 3]))
+    ].copy()
+    print(f"Number of full council sessions (2022 Jan, Feb, March): {len(df_2022)}")
+
+    # Combine the 2021 and 2022 data
+    df = pd.concat([df_2021, df_2022])
     return df
+
+
+def seconds_to_hhmmss(seconds: float) -> str:
+    # Remove microseconds
+    seconds = int(seconds)
+    return str(pd.to_datetime(seconds, unit="s").time())
 
 
 def main() -> None:
@@ -97,31 +121,32 @@ def main() -> None:
     # Prep the dataset
     df = _prep_dataset(df)
 
-    # Get 2021 data
-    df_2021 = df[df["year"] == 2021].copy()
+    # Load all annotations
+    annotation_dfs = []
+    for short_name in ["seattle", "oakland", "richmond"]:
+        annotation_df = pd.read_csv(DATA_DIR / f"whole-period-seg-{short_name}.csv")
+        annotation_df["council"] = short_name
+        annotation_dfs.append(annotation_df)
 
-    # Get 2022 Jan, Feb, March data
-    df[(df["year"] == 2022) & (df["session_datetime"].dt.month.isin([1, 2, 3]))].copy()
-
-    # Take a sample of 2021 for testing
-    df_2021_sample = df_2021.sample(5)
+    # Combine the annotations
+    all_annotations = pd.concat(annotation_dfs)
 
     # Init pipeline
-    pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        use_auth_token=os.getenv("HF_AUTH_TOKEN"),
-    )
+    # pipeline = Pipeline.from_pretrained(
+    #     "pyannote/speaker-diarization-3.1",
+    #     use_auth_token=os.getenv("HF_AUTH_TOKEN"),
+    # )
 
-    # Try loading pipelines to devices
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif torch.backends.mps.is_available():
-        device = "mps"
-    else:
-        device = "cpu"
-
-    print(f"Using device: {device}")
-    pipeline.to(torch.device(device))
+    # # Try loading pipelines to devices
+    # if torch.cuda.is_available():
+    #     device = "cuda"
+    # # elif torch.backends.mps.is_available():
+    # #     device = "mps"
+    # else:
+    #     device = "cpu"
+    #
+    # print(f"Using device: {device}")
+    # pipeline.to(torch.device(device))
 
     # Prep out dir
     if DIARIZED_TRANSCRIPTS_DIR.exists():
@@ -131,53 +156,123 @@ def main() -> None:
 
     # Apply pretrained pipeline
     new_metadata_rows = []
-    for _, session_details in tqdm(
-        df_2021_sample.iterrows(), desc="Sessions", total=len(df_2021_sample)
-    ):
+    for _, session_details in tqdm(df.iterrows(), desc="Sessions", total=len(df)):
         # Load transcript
         transcript = pd.read_csv(session_details["transcript_as_csv_path"])
+        transcript = transcript.dropna(subset=["start_time", "end_time", "text"])
 
-        # Diarize
-        diarization = pipeline(session_details["audio_path"])
+        # Find the matching row in the annotations
+        annotation_row = all_annotations.loc[
+            (all_annotations["council"] == session_details["council"])
+            & (all_annotations["session_id"] == session_details["session_id"])
+        ].iloc[0]
 
-        # For each speaker turn, combine sentences
-        # from the transcript that are included within the turn together
-        speaker_annotated_transcript_rows = []
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
-            # Get transcript portion via start_time and end_time
-            sentences_within_turn = transcript.loc[
-                (transcript["start_time"] >= turn.start)
-                & (transcript["end_time"] < turn.end)
-            ]
+        # Get the period start and end sentence indices
+        period_start_sentence_index = annotation_row["period_start_sentence_index"]
+        period_end_sentence_index = annotation_row["period_end_sentence_index"]
 
-            # Combine the sentences
-            combined_text = " ".join(sentences_within_turn["text"])
+        # Iter over rows of the transcript and create the new transcript rows
+        # following Michigan format
+        transcript_annotated_rows = []
+        for _, row in transcript.iterrows():
+            # Get the sentence index
+            sentence_index = row["index"]
 
-            # Append to speaker_annotated_transcript_rows
-            speaker_annotated_transcript_rows.append(
+            # Check for transitions
+            if sentence_index == period_start_sentence_index:
+                transition = "Comments - Into"
+            elif sentence_index == period_end_sentence_index:
+                transition = "Comments - Out of"
+            else:
+                transition = '""'
+
+            # Check for meeting section
+            if (
+                sentence_index >= period_start_sentence_index
+                and sentence_index <= period_end_sentence_index
+            ):
+                meeting_section = "Public Comment"
+            else:
+                meeting_section = "Other"
+
+            # Convert start and end times from seconds float to
+            # HH:MM:SS string
+            start_time = seconds_to_hhmmss(row["start_time"])
+            end_time = seconds_to_hhmmss(row["end_time"])
+
+            # Append to transcript_annotated_rows
+            transcript_annotated_rows.append(
                 {
-                    "start": sentences_within_turn["start_time"].min(),
-                    "end": sentences_within_turn["end_time"].max(),
-                    "speaker": speaker,
-                    "text": combined_text,
-                    "transition": '""',
-                    "meeting-section": "Other",
+                    "start": start_time,
+                    "end": end_time,
+                    "text": row["text"],
+                    "transition": transition,
+                    "meeting-section": meeting_section,
                     "speaker-role": "Other",
                 }
             )
 
+        # # Diarize
+        # diarization = pipeline(session_details["audio_path"])
+
+        # # For each speaker turn, combine sentences
+        # # from the transcript that are included within the turn together
+        # speaker_annotated_transcript_rows: list[dict[str, float | str]] = []
+        # current_speaker = None
+        # current_speaker_start = 0.0
+        # for turn, _, speaker in diarization.itertracks(yield_label=True):
+        #     # If the speaker hasnt been initialized, initialize
+        #     if current_speaker is None:
+        #         current_speaker = speaker
+        #         current_speaker_start = turn.start
+        #         continue
+
+        #     # If the speaker has changed, append the current speaker
+        #     # to the speaker_annotated_transcript_rows
+        #     if speaker != current_speaker:
+        #         print(speaker, current_speaker)
+        #         # Get transcript portion via start_time and end_time
+        #         sentences_within_turn = transcript.loc[
+        #             (transcript["start_time"] >= current_speaker_start)
+        #             & (transcript["end_time"] < current_speaker_end)
+        #         ]
+
+        #         # Combine the sentences
+        #         combined_text = " ".join(sentences_within_turn["text"])
+
+        #         # Append to speaker_annotated_transcript_rows
+        #         speaker_annotated_transcript_rows.append(
+        #             {
+        #                 "start": sentences_within_turn["start_time"].min(),
+        #                 "end": sentences_within_turn["end_time"].max(),
+        #                 "speaker": speaker,
+        #                 "text": combined_text,
+        #                 "transition": '""',
+        #                 "meeting-section": "Other",
+        #                 "speaker-role": "Other",
+        #             }
+        #         )
+
+        #         # Update current_speaker and current_speaker_start
+        #         current_speaker = speaker
+        #         current_speaker_start = turn.start
+        #         current_speaker_end = turn.end
+
+        #     else:
+        #         current_speaker_end = turn.end
+
         # Create a DataFrame from speaker_annotated_transcript_rows
-        speaker_annotated_transcript = pd.DataFrame(speaker_annotated_transcript_rows)
+        annotated_transcript = pd.DataFrame(transcript_annotated_rows)
 
         # Save to the same location as the
         # original transcript with "diarized-" prepended
         council = session_details["council"]
         session_id = session_details["session_id"]
-        diarized_transcript_path = (
-            DIARIZED_TRANSCRIPTS_DIR / f"diarized-{council}-session-{session_id}.csv"
+        annotated_transcript_path = (
+            DIARIZED_TRANSCRIPTS_DIR / f"{council}-session-{session_id}.csv"
         )
-        speaker_annotated_transcript.to_csv(
-            diarized_transcript_path,
+        annotated_transcript.to_csv(
+            annotated_transcript_path,
             index=False,
         )
 
@@ -193,6 +288,17 @@ def main() -> None:
                 "minutes_pdf_url": session_details["minutes_pdf_url"],
             }
         )
+
+    # Remove speaker diarization entirely
+    # Current issue is that our timestamp generation is different from the
+    # diarization timestamps -- the diarization timestamps seem to be correct,
+    # our transcript timestamps seem to be a bit early (but its inconsistent)
+    # Instead, we can just use the normal transcript
+    # but we wont have a speaker column...
+
+    # Store new metadata file
+    new_metadata_df = pd.DataFrame(new_metadata_rows)
+    new_metadata_df.to_csv(NEW_METADATA_PATH, index=False)
 
 
 if __name__ == "__main__":
