@@ -21,6 +21,11 @@ clean:
 install:
 	pip install uv
 	uv pip install -r requirements.txt
+	uv pip install -r requirements-dev.txt
+
+# lint, format, type check
+lint:
+	pre-commit run --all-files
 
 ###############################################################################
 # Infra / Data Storage
