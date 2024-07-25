@@ -4,6 +4,7 @@ import shutil
 import pandas as pd
 from dotenv import load_dotenv
 from tqdm import tqdm
+from cdp_backend.utils.file_utils import resource_copy
 
 ###############################################################################
 
@@ -129,7 +130,7 @@ def main() -> None:
         annotation_dfs.append(annotation_df)
 
     # Combine the annotations
-    all_annotations = pd.concat(annotation_dfs)
+    pd.concat(annotation_dfs)
 
     # Init pipeline
     # pipeline = Pipeline.from_pretrained(
@@ -161,39 +162,42 @@ def main() -> None:
         transcript = pd.read_csv(session_details["transcript_as_csv_path"])
         transcript = transcript.dropna(subset=["start_time", "end_time", "text"])
 
-        # Find the matching row in the annotations
-        annotation_row = all_annotations.loc[
-            (all_annotations["council"] == session_details["council"])
-            & (all_annotations["session_id"] == session_details["session_id"])
-        ].iloc[0]
+        # TODO: handle multiple comment periods
+        # TODO: copy each transcript over to drive
+        # TODO: add column with timestamped cdp link
 
-        # Get the period start and end sentence indices
-        period_start_sentence_index = annotation_row["period_start_sentence_index"]
-        period_end_sentence_index = annotation_row["period_end_sentence_index"]
+        # Find the matching row in the annotations
+        # annotation_rows = all_annotations.loc[
+        #     (all_annotations["council"] == session_details["council"])
+        #     & (all_annotations["session_id"] == session_details["session_id"])
+        # ]
+
+        # # Get the period start and end sentence indices
+        # period_start_sentence_indices = annotation_rows["period_start_sentence_index"]
+        # period_end_sentence_indices = annotation_rows["period_end_sentence_index"]
 
         # Iter over rows of the transcript and create the new transcript rows
         # following Michigan format
         transcript_annotated_rows = []
         for _, row in transcript.iterrows():
-            # Get the sentence index
-            sentence_index = row["index"]
+            # # Get the sentence index
+            # sentence_index = row["index"]
 
-            # Check for transitions
-            if sentence_index == period_start_sentence_index:
-                transition = "Comments - Into"
-            elif sentence_index == period_end_sentence_index:
-                transition = "Comments - Out of"
-            else:
-                transition = '""'
+            # # Check for transitions
+            # if sentence_index in period_start_sentence_indices:
+            #     transition = "Comments - Into"
+            #     in_comment_period = True
+            # elif sentence_index in period_end_sentence_indices:
+            #     transition = "Comments - Out of"
+            #     in_comment_period = False
+            # else:
+            #     transition = '""'
 
-            # Check for meeting section
-            if (
-                sentence_index >= period_start_sentence_index
-                and sentence_index <= period_end_sentence_index
-            ):
-                meeting_section = "Public Comment"
-            else:
-                meeting_section = "Other"
+            # # Check for meeting section
+            # if in_comment_period:
+            #     meeting_section = "Public Comment"
+            # else:
+            #     meeting_section = "Other"
 
             # Convert start and end times from seconds float to
             # HH:MM:SS string
@@ -206,60 +210,11 @@ def main() -> None:
                     "start": start_time,
                     "end": end_time,
                     "text": row["text"],
-                    "transition": transition,
-                    "meeting-section": meeting_section,
+                    "transition": '""',
+                    "meeting-section": "Other",
                     "speaker-role": "Other",
                 }
             )
-
-        # # Diarize
-        # diarization = pipeline(session_details["audio_path"])
-
-        # # For each speaker turn, combine sentences
-        # # from the transcript that are included within the turn together
-        # speaker_annotated_transcript_rows: list[dict[str, float | str]] = []
-        # current_speaker = None
-        # current_speaker_start = 0.0
-        # for turn, _, speaker in diarization.itertracks(yield_label=True):
-        #     # If the speaker hasnt been initialized, initialize
-        #     if current_speaker is None:
-        #         current_speaker = speaker
-        #         current_speaker_start = turn.start
-        #         continue
-
-        #     # If the speaker has changed, append the current speaker
-        #     # to the speaker_annotated_transcript_rows
-        #     if speaker != current_speaker:
-        #         print(speaker, current_speaker)
-        #         # Get transcript portion via start_time and end_time
-        #         sentences_within_turn = transcript.loc[
-        #             (transcript["start_time"] >= current_speaker_start)
-        #             & (transcript["end_time"] < current_speaker_end)
-        #         ]
-
-        #         # Combine the sentences
-        #         combined_text = " ".join(sentences_within_turn["text"])
-
-        #         # Append to speaker_annotated_transcript_rows
-        #         speaker_annotated_transcript_rows.append(
-        #             {
-        #                 "start": sentences_within_turn["start_time"].min(),
-        #                 "end": sentences_within_turn["end_time"].max(),
-        #                 "speaker": speaker,
-        #                 "text": combined_text,
-        #                 "transition": '""',
-        #                 "meeting-section": "Other",
-        #                 "speaker-role": "Other",
-        #             }
-        #         )
-
-        #         # Update current_speaker and current_speaker_start
-        #         current_speaker = speaker
-        #         current_speaker_start = turn.start
-        #         current_speaker_end = turn.end
-
-        #     else:
-        #         current_speaker_end = turn.end
 
         # Create a DataFrame from speaker_annotated_transcript_rows
         annotated_transcript = pd.DataFrame(transcript_annotated_rows)
@@ -286,6 +241,7 @@ def main() -> None:
                 "normalized_body_name": session_details["normalized_body_name"],
                 "cdp_url": session_details["cdp_url"],
                 "minutes_pdf_url": session_details["minutes_pdf_url"],
+                "source_video_url": session_details["source_video_url"],
             }
         )
 
@@ -298,8 +254,25 @@ def main() -> None:
 
     # Store new metadata file
     new_metadata_df = pd.DataFrame(new_metadata_rows)
+
+    # Sort by council and then session datetime
+    new_metadata_df = new_metadata_df.sort_values(
+        ["council", "session_datetime"],
+    )
+
+    # Save to disk
     new_metadata_df.to_csv(NEW_METADATA_PATH, index=False)
 
+    # Take a sample of three meetings from each council
+    COPIED_SOURCE_VIDEOS = DATA_DIR / "copied-source-videos"
+    COPIED_SOURCE_VIDEOS.mkdir(exist_ok=True)
+    for _, row in tqdm(
+        new_metadata_df.iterrows(),
+        desc="Copying Videos",
+        total=len(new_metadata_df),
+    ):
+        copy_path = COPIED_SOURCE_VIDEOS / f"{row.council}-{row.session_id}.mp4"
+        resource_copy(row.source_video_url, copy_path)
 
 if __name__ == "__main__":
     load_dotenv()

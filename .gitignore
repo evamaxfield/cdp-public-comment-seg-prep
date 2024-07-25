@@ -132,3 +132,5 @@ cdp-datasets/
 transcripts/
 cdp-*-transcripts/
 diarized-transcripts/
+to-annotate-session-audios/
+copied-source-videos/

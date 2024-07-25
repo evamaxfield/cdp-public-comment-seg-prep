@@ -1,32 +1,39 @@
+from pathlib import Path
+import shutil
+
+import pandas as pd
+from dotenv import load_dotenv
+from tqdm import tqdm
+from cdp_backend.utils.file_utils import resource_copy
 from cdp_data import datasets, CDPInstances
 import numpy as np
-from pathlib import Path
-import pandas as pd
-from tqdm import tqdm
 from dataclasses import dataclass
 
 ###############################################################################
 
 DATA_DIR = Path(__file__).parent.parent / "data"
-FULL_METADATA_PATH = DATA_DIR / "full-dataset-metadata.csv"
+EXISTING_METADATA_PATH = (
+    (DATA_DIR / "annotation-ready-dataset-metadata.csv").absolute().resolve()
+)
+NEW_ANNOTATION_SESSION_AUDIOS_DIR = DATA_DIR / "to-annotate-session-audios"
+NEW_METADATA_PATH = (
+    (DATA_DIR / "extended-annotation-ready-dataset-metadata.csv").absolute().resolve()
+)
 
 ###############################################################################
-
 
 @dataclass
 class CouncilDatasetRetrievalArgs:
     council: CDPInstances
     council_short_name: str
-    sample: int
     full_council_names: list[str]
     housing_committee_names: list[str]
 
 
-COUNCILS_AND_SAMPLES = [
+COUNCIL_DETAIL_LIST = [
     CouncilDatasetRetrievalArgs(
         council=CDPInstances.Seattle,
         council_short_name="seattle",
-        sample=200,
         full_council_names=[
             "City Council",
         ],
@@ -43,7 +50,6 @@ COUNCILS_AND_SAMPLES = [
     CouncilDatasetRetrievalArgs(
         council=CDPInstances.Oakland,
         council_short_name="oakland",
-        sample=201,
         full_council_names=[
             "Special Concurrent Meeting of the Oakland Redevelopment Successor Agency/City Council",  # noqa: E501
             "Special Concurrent Meeting of the Oakland Redevelopment Successor Agency / City Council / Geologic Hazard Abatement District Board",  # noqa: E501
@@ -58,7 +64,6 @@ COUNCILS_AND_SAMPLES = [
     CouncilDatasetRetrievalArgs(
         council=CDPInstances.Richmond,
         council_short_name="richmond",
-        sample=50,
         full_council_names=[
             "City Council",
         ],
@@ -73,17 +78,15 @@ CDP_URL_TEMPLATE = "https://councildataproject.org/{council_short_name}/#/events
 ###############################################################################
 
 
-def generate_dataset():
-    # Create the overall directory for saving
-    storage_dir = Path("transcripts/")
-    storage_dir.mkdir(exist_ok=True)
-
-    # Full dataset dataframe list
-    full_dataset_list = []
+def _generate_dataset(
+    target_n_sessions_per_council: int = 20,
+) -> pd.DataFrame:
+    # Get the full CDP dataset for Seattle, Oakland, and Richmond
+    council_datasets = []
 
     # Iter councils
     for council_and_sample in tqdm(
-        COUNCILS_AND_SAMPLES,
+        COUNCIL_DETAIL_LIST,
         desc="Generating datasets",
     ):
         # Set randomness
@@ -92,46 +95,10 @@ def generate_dataset():
         # Get all transcripts from the council
         ds = datasets.get_session_dataset(
             council_and_sample.council,
-            store_transcript=True,
-            store_transcript_as_csv=True,
-            # store_audio=True,
-            start_datetime="2020-01-01",
-            end_datetime="2024-01-01",
-            sample=council_and_sample.sample,
+            start_datetime="2021-01-01",
+            end_datetime="2022-04-01",
             raise_on_error=False,
         )
-
-        # Create child for this council
-        council_dir = storage_dir / council_and_sample.council_short_name
-        council_dir.mkdir(exist_ok=True)
-
-        # Iter sessions
-        for _, row in ds.iterrows():
-            # create the copy path
-            transcript_copy_path = council_dir / f"{row['id']}.csv"
-
-            # read the original transcript
-            transcript = pd.read_csv(row.transcript_as_csv_path)
-
-            # keep only the index and text columns
-            transcript = transcript[
-                [
-                    "index",
-                    "text",
-                ]
-            ]
-
-            # rename index to sentence_index
-            transcript = transcript.rename(columns={"index": "sentence_index"})
-
-            # add column for session id
-            transcript["session_id"] = row["id"]
-
-            # add column for council
-            transcript["council"] = CDPInstances.Seattle
-
-            # save the modified transcript
-            transcript.to_csv(transcript_copy_path, index=False)
 
         # Add new columns to be stored with the metadata of the dataset
         ds["council"] = council_and_sample.council_short_name
@@ -155,6 +122,11 @@ def generate_dataset():
 
         ds["normalized_body_name"] = ds.body_name.apply(get_committee_type)
 
+        # Finally store the audio url
+        ds["audio_url"] = ds["session_content_hash"].apply(
+            lambda content_hash: f"gs://{council_and_sample.council}.appspot.com/{content_hash}-audio.wav"
+        )
+
         # Subset to only the columns we want to keep
         ds_metadata = ds[
             [
@@ -166,8 +138,7 @@ def generate_dataset():
                 "cdp_url",
                 "minutes_pdf_url",
                 "video_uri",
-                "transcript_as_csv_path",
-                # "audio_path",
+                "audio_url",
             ]
         ].copy()
 
@@ -180,16 +151,80 @@ def generate_dataset():
         )
 
         # Add the council to the full dataset list
-        full_dataset_list.append(ds_metadata)
+        council_datasets.append(ds_metadata)
 
     # Concatenate all the datasets
-    full_dataset = pd.concat(full_dataset_list)
+    df = pd.concat(council_datasets)
 
-    # Save the full dataset
-    full_dataset.to_csv(FULL_METADATA_PATH, index=False)
+    # Read in the existing metadata file
+    existing_annotations = pd.read_csv(EXISTING_METADATA_PATH)
+
+    # Get value counts of existing annotations
+    existing_annotations_vc = existing_annotations["council"].value_counts()
+
+    # Find the difference between the target number of sessions and the existing number of sessions
+    target_n_sessions_diff = target_n_sessions_per_council - existing_annotations_vc
+
+    # Drop the existing data from the full dataset
+    print(f"Number of full council sessions (including existing): {len(df)}")
+    df = df[~df["session_id"].isin(existing_annotations["session_id"])]
+    print(f"Number of full council sessions (excluding existing): {len(df)}")
+
+    # Convert session_datetime to a datetime object
+    df["session_datetime"] = pd.to_datetime(df["session_datetime"])
+    df["year"] = df["session_datetime"].dt.year
+
+    # Sort by council and datetime
+    df = df.sort_values(["council", "session_datetime"])
+
+    # Subset to full council
+    df = df.loc[df["normalized_body_name"] == "full council"]
+
+    # Get 2021 data
+    df_2021 = df.loc[df["year"] == 2021].copy()
+    print(f"Number of full council sessions (2021): {len(df_2021)}")
+
+    # Get 2022 Jan, Feb, March data
+    df_2022 = df.loc[
+        (df["year"] == 2022) & (df["session_datetime"].dt.month.isin([1, 2, 3]))
+    ].copy()
+    print(f"Number of full council sessions (2022 Jan, Feb, March): {len(df_2022)}")
+
+    # Combine the 2021 and 2022 data
+    df = pd.concat([df_2021, df_2022])
+
+    # Select rows to fill out the dataset with the target number of sessions
+    sampled_council_dfs = []
+    for council, n_sessions in target_n_sessions_diff.items():
+        # Get random sample of df for the council
+        council_df = df.loc[df["council"] == council].sample(n_sessions, random_state=360)
+        sampled_council_dfs.append(council_df)
+
+    return pd.concat(sampled_council_dfs, ignore_index=True).reset_index(drop=True)
 
 
-###############################################################################
+def main() -> None:
+    # Prep the dataset
+    df = _generate_dataset()
+
+    # Sort by council and then session datetime
+    df = df.sort_values(
+        ["council", "session_datetime"],
+    )
+
+    # Save to disk
+    df.to_csv(NEW_METADATA_PATH, index=False)
+
+    # Copy the audios and rename them to the council and session id
+    NEW_ANNOTATION_SESSION_AUDIOS_DIR.mkdir(exist_ok=True)
+    for _, row in tqdm(
+        df.iterrows(),
+        desc="Copying audios",
+        total=len(df),
+    ):
+        copy_path = NEW_ANNOTATION_SESSION_AUDIOS_DIR / f"{row.council}-{row.session_id}.wav"
+        resource_copy(row.audio_url, copy_path)
 
 if __name__ == "__main__":
-    generate_dataset()
+    load_dotenv()
+    main()
