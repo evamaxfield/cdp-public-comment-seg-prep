@@ -274,6 +274,7 @@ def main() -> None:
         copy_path = COPIED_SOURCE_VIDEOS / f"{row.council}-{row.session_id}.mp4"
         resource_copy(row.source_video_url, copy_path)
 
+
 if __name__ == "__main__":
     load_dotenv()
     main()
