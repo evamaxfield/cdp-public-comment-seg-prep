@@ -2,7 +2,7 @@ import os
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from pathlib import Path
+from datetime import date
 
 import pandas as pd
 import anthropic
@@ -60,7 +60,6 @@ TOPIC_SEEDS = {
         "landlord",
         "tenant",
         "property",
-
     ],
     "Transportation and Mobility": [
         "public transit",
@@ -295,6 +294,7 @@ OUTPUT_FILE = Path("data/full-comment-data-with-topics.csv").resolve()
 
 ###############################################################################
 
+
 def split_short_name_to_city_and_date(short_name: str) -> tuple[str, date]:
     # Split the short name into city and date
     short_code_and_date_parts = short_name.split("_")
@@ -310,6 +310,7 @@ def split_short_name_to_city_and_date(short_name: str) -> tuple[str, date]:
     )
 
     return short_code, event_date
+
 
 def _prep_dataset() -> pd.DataFrame:
     # Store all data to single object
@@ -380,7 +381,7 @@ def _prep_dataset() -> pd.DataFrame:
     for city in CITY_ORDER:
         city_data = full_data[full_data["city_name"] == city]
         ordered_city_groups.append(city_data)
-    
+
     full_data = pd.concat(ordered_city_groups)
 
     return full_data
@@ -444,13 +445,14 @@ def annotate_comments() -> None:
             root = ET.fromstring(content)
 
             # Get the topic, throw away the reasoning
-            topic = root.find("topic").text
+            topic_el = root.find("topic")
+            assert topic_el is not None and topic_el.text is not None
 
             # Add to the row
             classified_comments.append(
                 {
                     **row.to_dict(),
-                    "topic": topic,
+                    "topic": topic_el.text,
                 }
             )
 
@@ -462,10 +464,10 @@ def annotate_comments() -> None:
             classified_df = pd.DataFrame(classified_comments)
             classified_df.to_csv(OUTPUT_FILE, index=False)
 
-
     # Save the classified comments
     classified_df = pd.DataFrame(classified_comments)
     classified_df.to_csv(OUTPUT_FILE, index=False)
+
 
 if __name__ == "__main__":
     annotate_comments()
