@@ -415,7 +415,7 @@ def annotate_comments() -> None:
     classified_comments = []
     selected_api_key_index = 0
     for i, row in tqdm(
-        meeting_comments.sample(50).iterrows(),
+        meeting_comments.iterrows(),
         desc="Classifying Comments",
         total=len(meeting_comments),
     ):
