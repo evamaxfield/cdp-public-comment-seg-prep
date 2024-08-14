@@ -391,6 +391,17 @@ def annotate_comments() -> None:
     # Load env
     load_dotenv()
 
+    # Check for multiple keys
+    if "ANTHROPIC_API_KEY" in os.environ:
+        api_keys = [os.environ["ANTHROPIC_API_KEY"]]
+    elif "ANTHROPIC_API_KEY_1" in os.environ:
+        api_keys = []
+        for env_var in os.environ:
+            if env_var.startswith("ANTHROPIC_API_KEY_"):
+                api_keys.append(os.environ[env_var])
+    else:
+        raise ValueError("No API key(s) found in environment variables.")
+
     # Read and prep data
     full_data = _prep_dataset()
 
@@ -400,25 +411,34 @@ def annotate_comments() -> None:
         & (full_data["speaker_role"] == "Commenter")
     ]
 
-    # Initialize the client
-    client = anthropic.Anthropic(
-        api_key=os.environ["ANTHROPIC_API_KEY"],
-    )
-
     # Classify all comments
     classified_comments = []
+    selected_api_key_index = 0
     for i, row in tqdm(
-        meeting_comments.iterrows(),
+        meeting_comments.sample(50).iterrows(),
         desc="Classifying Comments",
         total=len(meeting_comments),
     ):
         # Sleep to avoid rate limiting
         time.sleep(0.5)
 
+        # Get the selected API key
+        selected_api_key = api_keys[selected_api_key_index]
+
+        # Increment the index
+        selected_api_key_index = selected_api_key_index + 1
+        if selected_api_key_index >= len(api_keys):
+            selected_api_key_index = 0
+
+        # New client
+        client = anthropic.Anthropic(
+            api_key=selected_api_key,
+        )
+
         try:
             # Send the message
             message = client.messages.create(
-                model="claude-3-5-sonnet-20240620",
+                model="claude-3-haiku-20240307",
                 max_tokens=1000,
                 temperature=0,
                 system=SYSTEM_MESSAGE_PROMPT,
