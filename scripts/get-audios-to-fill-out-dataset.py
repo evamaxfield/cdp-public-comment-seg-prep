@@ -1,5 +1,4 @@
 from pathlib import Path
-import shutil
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -22,45 +21,46 @@ NEW_METADATA_PATH = (
 
 ###############################################################################
 
+
 @dataclass
 class CouncilDatasetRetrievalArgs:
-    council: CDPInstances
+    council: str
     council_short_name: str
     full_council_names: list[str]
     housing_committee_names: list[str]
 
 
 COUNCIL_DETAIL_LIST = [
-    CouncilDatasetRetrievalArgs(
-        council=CDPInstances.Seattle,
-        council_short_name="seattle",
-        full_council_names=[
-            "City Council",
-        ],
-        housing_committee_names=[
-            "Affordable Housing, Neighborhoods, and Finance Committee",
-            "Committee on Housing Affordability, Human Services, and Economic Resiliency",  # noqa: E501
-            "Finance and Housing Committee",
-            "Housing, Health, Energy, and Workers' Rights Committee",
-            "Housing, Health, Energy, and Workers’ Rights Committee",
-            "Sustainability and Renters' Rights Committee",
-            "Select Committee on 2023 Housing Levy",
-        ],
-    ),
-    CouncilDatasetRetrievalArgs(
-        council=CDPInstances.Oakland,
-        council_short_name="oakland",
-        full_council_names=[
-            "Special Concurrent Meeting of the Oakland Redevelopment Successor Agency/City Council",  # noqa: E501
-            "Special Concurrent Meeting of the Oakland Redevelopment Successor Agency / City Council / Geologic Hazard Abatement District Board",  # noqa: E501
-            "Concurrent Meeting of the Oakland Redevelopment Successor Agency / City Council / Geologic Hazard Abatement District Board",  # noqa: E501
-            "* Concurrent Meeting of the Oakland Redevelopment Successor Agency and the City Council",  # noqa: E501
-        ],
-        housing_committee_names=[
-            "*Community & Economic Development Committee",
-            "*Special Community & Economic Development Committee",
-        ],
-    ),
+    # CouncilDatasetRetrievalArgs(
+    #     council=CDPInstances.Seattle,
+    #     council_short_name="seattle",
+    #     full_council_names=[
+    #         "City Council",
+    #     ],
+    #     housing_committee_names=[
+    #         "Affordable Housing, Neighborhoods, and Finance Committee",
+    #         "Committee on Housing Affordability, Human Services, and Economic Resiliency",  # noqa: E501
+    #         "Finance and Housing Committee",
+    #         "Housing, Health, Energy, and Workers' Rights Committee",
+    #         "Housing, Health, Energy, and Workers’ Rights Committee",
+    #         "Sustainability and Renters' Rights Committee",
+    #         "Select Committee on 2023 Housing Levy",
+    #     ],
+    # ),
+    # CouncilDatasetRetrievalArgs(
+    #     council=CDPInstances.Oakland,
+    #     council_short_name="oakland",
+    #     full_council_names=[
+    #         "Special Concurrent Meeting of the Oakland Redevelopment Successor Agency/City Council",  # noqa: E501
+    #         "Special Concurrent Meeting of the Oakland Redevelopment Successor Agency / City Council / Geologic Hazard Abatement District Board",  # noqa: E501
+    #         "Concurrent Meeting of the Oakland Redevelopment Successor Agency / City Council / Geologic Hazard Abatement District Board",  # noqa: E501
+    #         "* Concurrent Meeting of the Oakland Redevelopment Successor Agency and the City Council",  # noqa: E501
+    #     ],
+    #     housing_committee_names=[
+    #         "*Community & Economic Development Committee",
+    #         "*Special Community & Economic Development Committee",
+    #     ],
+    # ),
     CouncilDatasetRetrievalArgs(
         council=CDPInstances.Richmond,
         council_short_name="richmond",
@@ -99,6 +99,40 @@ def _generate_dataset(
             end_datetime="2022-04-01",
             raise_on_error=False,
         )
+
+        # If council is richmond, drop certain sessions
+        if council_and_sample.council_short_name == "richmond":
+            remove_sessions = [
+                "bbf6a25dae6a",
+                "ccfdc9afc698",
+                "fe371eafcbd4",
+                "528f625abd6a",
+                "28db9b12fece",
+                "4a32e9a69c09",
+                "d4a27b07f47d",
+                "d542e7abb073",
+                "2462ed64efe2",
+                "d8953dadf474",
+                "d5e5ef80ef55",
+                "a3b5df4a14e3",
+                "428c289d4548",
+                "612301028fcc",
+                "14bce7109743",
+                "aa261e4e1e1b",
+                "d4ebd22f28e1",
+                "be5eeb036b86",
+                "e83d3fcee3fa",
+                "79a579e7a9ae",
+                "02fded472e99",
+                "b485034ed953",
+                "b1f06d77c1d5",
+                "b35666eac4ad",
+                "25edf68f4c3e",
+                "d1fab39dc2f8",
+                "0b604556a687",
+            ]
+
+            ds = ds[~ds["id"].isin(remove_sessions)]
 
         # Add new columns to be stored with the metadata of the dataset
         ds["council"] = council_and_sample.council_short_name
@@ -195,9 +229,11 @@ def _generate_dataset(
 
     # Select rows to fill out the dataset with the target number of sessions
     sampled_council_dfs = []
-    for council, n_sessions in target_n_sessions_diff.items():
+    for council, n_sessions in target_n_sessions_diff.loc[["richmond"]].items():
         # Get random sample of df for the council
-        council_df = df.loc[df["council"] == council].sample(n_sessions, random_state=360)
+        council_df = df.loc[df["council"] == council].sample(
+            n_sessions, random_state=360
+        )
         sampled_council_dfs.append(council_df)
 
     return pd.concat(sampled_council_dfs, ignore_index=True).reset_index(drop=True)
@@ -222,8 +258,11 @@ def main() -> None:
         desc="Copying audios",
         total=len(df),
     ):
-        copy_path = NEW_ANNOTATION_SESSION_AUDIOS_DIR / f"{row.council}-{row.session_id}.wav"
+        copy_path = (
+            NEW_ANNOTATION_SESSION_AUDIOS_DIR / f"{row.council}-{row.session_id}.wav"
+        )
         resource_copy(row.audio_url, copy_path)
+
 
 if __name__ == "__main__":
     load_dotenv()
